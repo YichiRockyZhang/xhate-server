@@ -3,6 +3,8 @@ from transformers import pipeline
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import shap
 import pandas as pd
+from lime.lime_text import LimeTextExplainer
+import torch.nn.functional as F
 
 # from models import Model_Rational_Label
 
@@ -54,7 +56,10 @@ app.layout = html.Div(children=[
                     'data': [graphProbs(probs=[0,1,0], labels=['hate speech', 'normal', 'offensive'])],
                     'layout': go.Layout(title="Classification Probabilities")
                 }),
+                html.H1(children='SHAP_graph'),
                 dcc.Graph(id='SHAP_graph', figure=px.bar()),
+                html.H1(children='LIME-Dashboard'),
+                html.P(id="LIME-Dashboard")
              ])
 ])
 
@@ -123,6 +128,31 @@ def updateSHAP(input_value):
                         color='label', color_discrete_map=label2color,
                         barmode='group')
     return SHAP_graph
+
+@app.callback(
+    Output(component_id="LIME-Dashboard", component_property='children'),
+    Input(component_id='textbox-input', component_property='value')
+)
+def update_LIME(text):
+    explainer = LimeTextExplainer(class_names=['Hate-Speech', 'Normal', 'Offensive'])
+
+    exp = explainer.explain_instance(text, predict_prob)
+
+    obj = html.Iframe(
+            # Javascript is disabled from running in an Iframe for security reasons
+            # Static HTML only!!!
+            srcDoc=exp.as_html(),
+            width='100%',
+            height='150px',
+            style={'border': '2px #d3d3d3 solid'},
+        )
+    return obj
+
+def predict_prob(text):
+    outputs = model(**tokenizer(text, return_tensors="pt", padding=True))
+    probas = F.softmax(outputs.logits).detach().numpy()
+    return probas
+
 
 @flask_app.route("/test")
 @cross_origin()
