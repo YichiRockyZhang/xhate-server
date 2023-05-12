@@ -1,6 +1,6 @@
 import torch
 from transformers import pipeline
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoModelForCausalLM
 import shap
 import pandas as pd
 from lime.lime_text import LimeTextExplainer
@@ -10,6 +10,11 @@ import torch.nn.functional as F
 
 tokenizer = AutoTokenizer.from_pretrained("Hate-speech-CNERG/bert-base-uncased-hatexplain")
 model = AutoModelForSequenceClassification.from_pretrained("Hate-speech-CNERG/bert-base-uncased-hatexplain")
+
+model_path = "uw-hai/polyjuice"
+poly_generator = pipeline("text-generation", 
+    model=AutoModelForCausalLM.from_pretrained(model_path), 
+    tokenizer=AutoTokenizer.from_pretrained(model_path))
 
 # Run this app with `python app.py` and
 # visit http://127.0.0.1:8050/ in your web browser.
@@ -48,7 +53,7 @@ app.layout = html.Div(children=[
 
     html.Div([
         "Input: ",
-        dcc.Input(id='textbox-input', value="What's happening?", type='text')
+        dcc.Input(id='textbox-input', value="A dog is embraced by the woman.", type='text'),
     ]),
     html.Div(id='textbox-output',
              children=[
@@ -60,8 +65,18 @@ app.layout = html.Div(children=[
                 dcc.Graph(id='SHAP_graph', figure=px.bar()),
                 html.H1(children='LIME-Dashboard'),
                 html.P(id="LIME-Dashboard")
-             ])
+             ]),
+    html.Div(id = 'polyjuice-output', 
+             children = [html.H1(children='Select Polyjuice Control Code'),
+                    dcc.Dropdown(['negation', 'quantifier', 'shuffle', 'lexical', 'resemantic', 'insert', 'delete', 'restructure'], 'negation', id='demo-dropdown'),
+                    html.Div(id='dd-output-container'),
+                    dcc.Graph(id='probs_graph_poly', figure={
+                    'data': [graphProbs(probs=[0,1,0], labels=['hate speech', 'normal', 'offensive'])],
+                    'layout': go.Layout(title="Classification Probabilities")
+                            })],
+                    ),
 ])
+    
 
 def predict(text):
     text = str(text)
@@ -152,6 +167,57 @@ def predict_prob(text):
     outputs = model(**tokenizer(text, return_tensors="pt", padding=True))
     probas = F.softmax(outputs.logits).detach().numpy()
     return probas
+
+
+@app.callback(
+    Output('dd-output-container', 'children'),
+    Input('textbox-input', 'value'),
+    Input('demo-dropdown', 'value'),
+)
+
+def generate_polyjuice(text, control_code):
+    if not control_code:
+        return
+    prompt_text = text + " [" + control_code + "]"
+    l = poly_generator(prompt_text, num_return_sequences=1)
+    print(l)
+    res = ""
+    print(l[0]['generated_text'])
+    if len(l[0]['generated_text'].split(" [" + control_code + "] ")) == 2:
+        perturbed = l[0]['generated_text'].split(" [" + control_code + "] ")[1]
+        if len(perturbed.split(" [SEP] ")) < 2:
+            back = perturbed.split(" [SEP] ")
+            back_split = back.split(" [ANSWER] ")
+            res = back_split
+        else:
+            [front, back] = perturbed.split(" [SEP] ")
+            front_split = front.split("[BLANK]")
+            back_split = back.split(" [ANSWER] ")
+            print(front, back)
+            if len(front_split) == len(back_split):
+                for i in range(len(front_split)):
+                    res += front_split[i]
+                    res += back_split[i]
+    
+    return res
+
+@app.callback(
+    Output(component_id='probs_graph_poly', component_property='figure'),
+    Input(component_id='textbox-input', component_property='value'),
+    Input('demo-dropdown', 'value'),
+)
+def updateProbsGraphPoly(text, control_code):
+    input_value = generate_polyjuice(text, control_code)
+    res = _predict(input_value)
+    labels, probs = res['labels'], res['probs']
+
+    if input_value.isspace() or input_value == "" or control_code == '':
+        probs = [int(label == 'normal') for label in labels]
+
+    probs_graph = graphProbs(probs, labels)
+    probs_graph.update_layout(transition_duration=500)
+
+    return probs_graph
 
 
 @flask_app.route("/test")
